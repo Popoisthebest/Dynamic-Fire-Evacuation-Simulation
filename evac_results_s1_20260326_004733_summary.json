@@ -1,0 +1,128 @@
+{
+  "scenario_id": 1,
+  "scenario_name": "Scenario 1: 3F standard building / 2F corridor fire",
+  "finished_reason": "time_limit_no_remaining_paths",
+  "sim_time_s": 180.006,
+  "floors": 3,
+  "total_agents": 113,
+  "evacuated_agents": 91,
+  "stranded_agents": 22,
+  "evacuation_rate": 0.8053,
+  "avg_evacuation_time_s": 11.857,
+  "p50_evacuation_time_s": 9.34,
+  "p90_evacuation_time_s": 21.105,
+  "max_evacuation_time_s": 46.501,
+  "avg_reroutes_per_agent": 2.611,
+  "agents_with_5plus_reroutes": 22,
+  "agents_with_10plus_reroutes": 0,
+  "max_reroutes_single_agent": 8,
+  "agents_using_fallback": 5,
+  "total_deadlock_escapes": 5,
+  "total_reroutes": 295,
+  "avg_smoke_exposure": 2.933,
+  "max_smoke_exposure": 62.752,
+  "avg_stalled_time_s": 34.935,
+  "max_stalled_time_s": 180.006,
+  "avg_distance_px": 737.37,
+  "max_distance_px": 2187.09,
+  "active_fire_nodes_final": 5,
+  "blocked_corridors_final": 105,
+  "closed_fire_doors_final": 30,
+  "fire_door_edges_total": 30,
+  "blocked_nodes_final": [
+    "EX_C"
+  ],
+  "exit_usage": {
+    "EX_L": 28,
+    "EX_R": 39,
+    "EX_C": 24
+  },
+  "top_congested_edges": [
+    {
+      "edge": [
+        "F1_S10",
+        "F2_S10"
+      ],
+      "max_congestion": 20
+    },
+    {
+      "edge": [
+        "F2_S10",
+        "F3_S10"
+      ],
+      "max_congestion": 14
+    },
+    {
+      "edge": [
+        "F1_S6",
+        "F2_S6"
+      ],
+      "max_congestion": 14
+    },
+    {
+      "edge": [
+        "F2_S6",
+        "F3_S6"
+      ],
+      "max_congestion": 12
+    },
+    {
+      "edge": [
+        "F2_S2",
+        "F3_S2"
+      ],
+      "max_congestion": 10
+    },
+    {
+      "edge": [
+        "F1_S2",
+        "F2_S2"
+      ],
+      "max_congestion": 10
+    },
+    {
+      "edge": [
+        "EX_R",
+        "F1_B11"
+      ],
+      "max_congestion": 7
+    },
+    {
+      "edge": [
+        "F3_B3",
+        "F3_B4"
+      ],
+      "max_congestion": 6
+    }
+  ],
+  "events_triggered": [
+    {
+      "time_s": 12.023,
+      "label": "Central exit EX_C closed"
+    },
+    {
+      "time_s": 18.004,
+      "label": "3F central stair lobby blocked"
+    }
+  ],
+  "stranded_reasons": {
+    "no_path": 22
+  },
+  "agent_type_stats": {
+    "normal": {
+      "total": 78,
+      "evacuated": 63,
+      "avg_evac_time_s": 10.2
+    },
+    "elderly": {
+      "total": 18,
+      "evacuated": 12,
+      "avg_evac_time_s": 20.38
+    },
+    "child": {
+      "total": 17,
+      "evacuated": 16,
+      "avg_evac_time_s": 11.986
+    }
+  }
+}
