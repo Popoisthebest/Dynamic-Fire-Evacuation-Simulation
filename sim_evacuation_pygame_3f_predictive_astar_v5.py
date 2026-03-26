@@ -34,6 +34,7 @@ NODE_COLOR = (90, 100, 115)
 TEXT_COLOR = (40, 45, 52)
 FIRE_COLOR = (225, 70, 45)
 SMOKE_COLOR = (120, 120, 120)
+HEAT_COLOR = (230, 120, 70)
 PATH_COLOR = (40, 190, 90)
 REROUTE_PATH_COLOR = (245, 185, 60)
 EXIT_COLOR = (30, 120, 220)
@@ -46,6 +47,9 @@ FIRE_DOOR_OPEN_COLOR = (70, 130, 200)
 FIRE_DOOR_CLOSED_COLOR = (240, 150, 40)
 LEGEND_BG = (255, 255, 255)
 ELDERLY_COLOR = (200, 140, 60)   # 노약자 에이전트
+GUIDE_GO_COLOR = (50, 205, 110)      # 안전 방향(유도등 점등)
+GUIDE_CAUTION_COLOR = (255, 205, 85) # 주의(혼잡/연기 증가)
+GUIDE_STOP_COLOR = (220, 70, 70)     # 위험(진입 금지)
 
 pygame.init()
 screen = pygame.display.set_mode((WIDTH, HEIGHT))
@@ -200,6 +204,7 @@ class EvacuationSim:
         self.G = self.base_graph.copy()
         self.agents = []
         self.smoke = {n: 0.0 for n in self.G.nodes}
+        self.temperature = {n: 22.0 for n in self.G.nodes}  # 센서 기반 온도(°C)
         self.fire = set()
         self.initial_fire = set()
         self.blocked_nodes = set()
@@ -215,6 +220,7 @@ class EvacuationSim:
         self.event_log = []
         self.scheduled_events = []
         self.triggered_event_ids = set()
+        self.edge_guidance_state = {}
         # [보완 3] 이벤트 직후 전체 재경로 플래그
         self.force_recompute_all = False
 
@@ -230,6 +236,8 @@ class EvacuationSim:
         self.FALLBACK_STALL_THRESHOLD = 7.0
         # [보완 9] 데드락 강제 탈출 임계값
         self.HARD_STALL_THRESHOLD = 12.0
+        # 아이디어 반영: 센서 융합 위험도(연기/온도/혼잡) 가중치
+        self.RISK_WEIGHTS = {"smoke": 0.52, "temperature": 0.28, "congestion": 0.20}
 
         scenarios = {
             1: {
@@ -429,7 +437,9 @@ class EvacuationSim:
             dist = data["length"]
             congestion = data.get("congestion", 0)
             smoke = max(self.smoke.get(a, 0.0), self.smoke.get(b, 0.0))
-            cost = dist + 300 * smoke + 120 * congestion
+            edge_temp = max(self.temperature.get(a, 22.0), self.temperature.get(b, 22.0))
+            temp_norm = min(1.0, max(0.0, (edge_temp - 22.0) / 58.0))
+            cost = dist + 320 * smoke + 110 * temp_norm + 120 * congestion
             if self.is_stair_edge(a, b):
                 overflow = max(0, congestion - self.STAIR_CAPACITY)
                 # [보완 2] 계단 overflow 페널티 강화
@@ -461,9 +471,11 @@ class EvacuationSim:
         dist = data["length"]
         congestion = data.get("congestion", 0)
         smoke = max(self.smoke.get(a, 0.0), self.smoke.get(b, 0.0))
+        edge_temp = max(self.temperature.get(a, 22.0), self.temperature.get(b, 22.0))
+        temp_norm = min(1.0, max(0.0, (edge_temp - 22.0) / 58.0))
         inflow = self.predicted_inflow(a, b)
 
-        cost = dist + 340 * smoke + 120 * congestion
+        cost = dist + 340 * smoke + 100 * temp_norm + 120 * congestion
         cost += (110 - 20 * min(depth, 3)) * inflow
 
         if self.is_stair_edge(a, b):
@@ -517,9 +529,11 @@ class EvacuationSim:
         for n in self.G.nodes:
             if n in self.fire:
                 self.smoke[n] = 1.0
+                self.temperature[n] = 250.0
                 continue
             if n in self.blocked_nodes:
                 self.smoke[n] = 0.0
+                self.temperature[n] = 22.0
                 continue
             try:
                 min_d = min(
@@ -530,6 +544,9 @@ class EvacuationSim:
                 min_d = 10000
             front = max(0.0, self.time_s * 22 - min_d)
             self.smoke[n] = max(0.0, min(1.0, front / 400))
+            # 센서 온도 모델: 화원과 거리, 시간에 따라 증가(완만한 포화 형태)
+            temp_gain = max(0.0, (280 - min_d) / 280)
+            self.temperature[n] = 22.0 + 58.0 * temp_gain * min(1.0, self.time_s / 25.0)
 
         self.blocked_edges_dynamic = set()
 
@@ -578,11 +595,51 @@ class EvacuationSim:
             else:
                 congestion_penalty = congestion * 60
             smoke_penalty = smoke * 1500
+            edge_temp = max(self.temperature.get(u, 22.0), self.temperature.get(v, 22.0))
+            temp_penalty = max(0.0, edge_temp - 35.0) * 7.5
             door_penalty = 0
             if self.is_fire_door_edge(u, v) and key in self.closed_fire_doors:
                 door_penalty = 170 + 50 * congestion
 
-            data["weight"] = base + fire_penalty + congestion_penalty + smoke_penalty + door_penalty
+            data["weight"] = base + fire_penalty + congestion_penalty + smoke_penalty + temp_penalty + door_penalty
+
+    def edge_risk_score(self, u, v):
+        """센서(연기/온도/혼잡) 융합 위험도 [0,1]."""
+        if not self.G.has_edge(u, v):
+            return 1.0
+        smoke = max(self.smoke.get(u, 0.0), self.smoke.get(v, 0.0))
+        temp = max(self.temperature.get(u, 22.0), self.temperature.get(v, 22.0))
+        temp_norm = min(1.0, max(0.0, (temp - 22.0) / 58.0))
+        congestion = self.G[u][v].get("congestion", 0)
+        congestion_norm = min(1.0, congestion / max(1, self.STAIR_CAPACITY))
+        risk = (
+            self.RISK_WEIGHTS["smoke"] * smoke
+            + self.RISK_WEIGHTS["temperature"] * temp_norm
+            + self.RISK_WEIGHTS["congestion"] * congestion_norm
+        )
+        return min(1.0, max(0.0, risk))
+
+    def update_guidance_lights(self):
+        """
+        빛 기반 동적 유도 상태를 에지별로 업데이트.
+        - go: 안전(초록)
+        - caution: 주의(노랑)
+        - stop: 위험/차단(빨강 또는 소등 대상)
+        """
+        states = {}
+        for u, v in self.G.edges:
+            key = self.edge_key(u, v)
+            if self.edge_is_blocked(u, v):
+                states[key] = "stop"
+                continue
+            risk = self.edge_risk_score(u, v)
+            if risk >= 0.75:
+                states[key] = "stop"
+            elif risk >= 0.45:
+                states[key] = "caution"
+            else:
+                states[key] = "go"
+        self.edge_guidance_state = states
 
     def safest_exit_path(self, source, relaxed=False):
         """[보완 1] 항상 적어도 하나의 경로를 반환하도록 2단계 fallback"""
@@ -736,6 +793,7 @@ class EvacuationSim:
         stalled_vals = [a.stalled_time for a in self.agents]
         smoke_vals = [a.cumulative_smoke for a in self.agents]
         dist_vals = [a.travelled_distance for a in self.agents]
+        temp_vals = list(self.temperature.values())
         exit_counts = {}
         for a in self.agents:
             if a.reached_exit:
@@ -791,6 +849,8 @@ class EvacuationSim:
             "total_reroutes": self.reroute_events,
             "avg_smoke_exposure": round(sum(smoke_vals) / len(smoke_vals), 3) if smoke_vals else 0.0,
             "max_smoke_exposure": round(max(smoke_vals), 3) if smoke_vals else 0.0,
+            "avg_temperature_c": round(sum(temp_vals) / len(temp_vals), 2) if temp_vals else 22.0,
+            "max_temperature_c": round(max(temp_vals), 2) if temp_vals else 22.0,
             "avg_stalled_time_s": round(sum(stalled_vals) / len(stalled_vals), 3) if stalled_vals else 0.0,
             "max_stalled_time_s": round(max(stalled_vals), 3) if stalled_vals else 0.0,
             "avg_distance_px": round(sum(dist_vals) / len(dist_vals), 2) if dist_vals else 0.0,
@@ -814,6 +874,7 @@ class EvacuationSim:
         self.time_s += dt
         self.update_congestion()
         self.update_hazards()
+        self.update_guidance_lights()
 
         # [보완 3] 이벤트 발생 시 즉시 전체 재경로
         if self.force_recompute_all:
@@ -991,16 +1052,36 @@ class EvacuationSim:
                 self.draw_block_marker(x1, y1, x2, y2)
                 continue
 
+            guide = self.edge_guidance_state.get(key)
+            if guide == "go":
+                guide_color = GUIDE_GO_COLOR
+            elif guide == "caution":
+                guide_color = GUIDE_CAUTION_COLOR
+            elif guide == "stop":
+                guide_color = GUIDE_STOP_COLOR
+            else:
+                guide_color = None
+
             if key in self.fire_door_edges:
                 color = FIRE_DOOR_CLOSED_COLOR if key in self.closed_fire_doors else FIRE_DOOR_OPEN_COLOR
+                if guide_color:
+                    color = tuple(int(0.6 * c + 0.4 * g) for c, g in zip(color, guide_color))
                 pygame.draw.line(screen, color, (x1, y1), (x2, y2), 4)
             else:
                 smoke = max(self.smoke[u], self.smoke[v])
+                heat = min(1.0, max(0.0, (max(self.temperature[u], self.temperature[v]) - 22.0) / 58.0))
                 color = (
                     int(EDGE_COLOR[0] * (1 - smoke) + SMOKE_COLOR[0] * smoke),
                     int(EDGE_COLOR[1] * (1 - smoke) + SMOKE_COLOR[1] * smoke),
                     int(EDGE_COLOR[2] * (1 - smoke) + SMOKE_COLOR[2] * smoke),
                 )
+                color = (
+                    int(color[0] * (1 - 0.35 * heat) + HEAT_COLOR[0] * (0.35 * heat)),
+                    int(color[1] * (1 - 0.35 * heat) + HEAT_COLOR[1] * (0.35 * heat)),
+                    int(color[2] * (1 - 0.35 * heat) + HEAT_COLOR[2] * (0.35 * heat)),
+                )
+                if guide_color:
+                    color = tuple(int(0.55 * c + 0.45 * g) for c, g in zip(color, guide_color))
                 congestion = data.get("congestion", 0)
                 # [보완 2] 혼잡 시 에지 두께 강조
                 width = 2 + min(6, congestion // 2)
@@ -1068,6 +1149,7 @@ class EvacuationSim:
         total = len(self.agents)
         evacuated = sum(a.evacuated for a in self.agents)
         blocked_corridors = len(self.blocked_edges_dynamic)
+        hot_nodes = sum(1 for t in self.temperature.values() if t >= 60.0)
         flashing = sum(1 for a in self.agents if (not a.evacuated) and a.reroute_flash > 0)
         fallback_now = sum(1 for a in self.agents if (not a.evacuated) and a.fallback_mode)
         stranded = total - evacuated
@@ -1085,6 +1167,7 @@ class EvacuationSim:
             f"Evacuated: {evacuated}/{total} | Stranded: {stranded}",
             f"P50: {p50:.1f}s | P90: {p90:.1f}s",
             f"Fire nodes: {len(self.fire)} | Blocked corridors: {blocked_corridors}",
+            f"Hot nodes(>=60C): {hot_nodes}",
             f"Rerouting now: {flashing} | Total reroutes: {self.reroute_events}",
             f"Fallback now: {fallback_now}",
             "Keys: 1-3 scenario | SPACE pause | R reset | E export",
@@ -1096,12 +1179,16 @@ class EvacuationSim:
             surf = font.render(line, True, TEXT_COLOR)
             screen.blit(surf, (x0, y0 + i * 18))
 
-        legend = pygame.Rect(WIDTH - 340, 8, 310, 200)
+        legend = pygame.Rect(WIDTH - 340, 8, 310, 270)
         pygame.draw.rect(screen, LEGEND_BG, legend, border_radius=8)
         pygame.draw.rect(screen, (180, 188, 198), legend, 1, border_radius=8)
         items = [
             (FIRE_COLOR, "Fire"),
             (SMOKE_COLOR, "Smoke / hazardous zone"),
+            (HEAT_COLOR, "Heat rise zone"),
+            (GUIDE_GO_COLOR, "Light guide: go"),
+            (GUIDE_CAUTION_COLOR, "Light guide: caution"),
+            (GUIDE_STOP_COLOR, "Light guide: stop"),
             (PATH_COLOR, "Recommended path"),
             (REROUTE_PATH_COLOR, "Recently rerouted"),
             ((200, 60, 200), "Fallback / deadlock escape"),
